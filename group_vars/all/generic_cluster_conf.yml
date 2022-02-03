@@ -1,0 +1,61 @@
+
+postgresql_version: '14'
+postgresql_version_is_beta: 'no' # 'no' or 'yes'
+
+postgresql_server_listen: '*'
+
+# if we recreate data folder when re-installing postgresql server
+reload: false
+
+##MASTER_DETAILS
+master_ip: xxx.xxx.xxx.xxx
+master_ip_2: xxx.xxx.xxx.xxx
+master_pg_hba_conf: '/dataxxxx/pg_hba.conf'
+
+
+## LOGICAL REPLICATION ############################################################################
+logical_master_ip: xxx.xxx.xxx.xxx
+logical_master_ip_2: "{{ master_ip_2 }}"
+##logical_master_pg_hba_conf: "{{ master_pg_hba_conf }}"
+##logical_master_ip: "{{ master_ip }}"
+logical_master_pg_hba_conf: '/dataxxxx/pg_hba.conf'
+logical_connection: "host={{ logical_master_ip }} port=5432 user=replication_user_xxx dbname=xxxx"
+drop_replication_slot: true
+
+
+## STANDARD MOUNT POINTS #################################################################
+context_mount_points:
+        - mountpoint:  "/mnt/new_mount_xxxx"
+          device: "xxx.xxx.xxx.xxx:/volumex"
+
+source_template_folder: 'source_template_files'
+
+
+
+## PGBACKREST ########################################################################################
+delete_old_pgbackrest_stanza: 'yes'
+backup_port: "{{ postgresql_port }}"
+backup_s3_bucket: 'backup-rep-oxxxx'
+backup_folder: '/data/backup'
+backup_user: postgres
+# default values::
+#compress_level: 3
+#process_max: 4
+#backup_time: '18'
+
+
+
+
+
+
+#############################################################################
+#############################################################################
+
+## this vars could be used to define multiple users and databases to create
+
+# in our case we only want to create the db defined on the other config file
+postgresql_databases:
+    - name: "{{ db_name }}"
+
+
+
