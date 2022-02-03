@@ -1,0 +1,19 @@
+- name: if GUC var is not provided we pick it up from the cluster_conf.yml file
+  set_fact: postgresql_conf_settings_update = "{{ postgresql_conf_settings }}"
+  when: postgresql_conf_settings_update is not defined
+
+- name: update gucs on postgresql.conf
+  lineinfile:
+          path: "/data/{{ cluster_name }}/postgresql.conf"
+          regexp: "^{{ item.key }}"
+          line: "{{ item.key }} = '{{ item.value }}'"
+  with_dict:
+          "{{ postgresql_conf_settings_update }}"
+
+- name: restart postgresql
+  become: true
+  become_user: postgres
+  shell:
+      cmd : source /etc/profile && pg_ctl restart -m fast
+
+

@@ -1,0 +1,28 @@
+host_groups:
+ - group_name: xxxxx
+   gid: xxxxx
+ - group_name: xxxxxx
+   gid: xxxxxx
+
+host_users:
+ - user: root
+   id: 0
+   gid: 0
+   group_name: root
+   extra_gids: x xxx
+ - user: postgres
+   id: 1001
+   gid: xxxxxx
+   group_name: sysadmin 
+   extra_gids: xxxx,xxx,xxx
+ - user: pgbouncer
+   id: xxxx
+   gid: xxx
+   group_name: xxxxx
+   extra_gids: xxxx
+ - user: xxxxxxxx
+   id: xxxx
+   gid: xxxxx
+   group_name: xxxxxx
+   extra_gids: xxxxxx
+ 
