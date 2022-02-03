@@ -1,0 +1,6 @@
+---
+# defaults file for pgbackrest
+compress_level: 3
+process_max: 4
+backup_time: '18'
+

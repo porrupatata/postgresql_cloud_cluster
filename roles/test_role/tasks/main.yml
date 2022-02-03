@@ -1,0 +1,22 @@
+
+- name: get sql files
+  delegate_to: localhost
+  shell: rm /tmp/post_sql_files.sh
+
+- name: get sql files
+  delegate_to: localhost
+  shell: (cd post_queries ; find {{ item }}/*.sql >> /tmp/post_sql_files.sh)
+  with_items:
+    - generic
+    - turn_into_dev_server
+
+- name: get post_sql_files from shell
+  delegate_to: localhost
+  shell: cat /tmp/post_sql_files.sh
+  register: post_sqls
+
+- debug: 
+    msg: "{{ item }}"
+  with_items:
+    - "{{ post_sqls.stdout_lines }}"
+

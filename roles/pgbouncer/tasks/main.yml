@@ -1,0 +1,237 @@
+---
+# tasks file for pgbouncer
+
+## get pgbouncer latest release info ####################################################################
+- name: Get pgbouncer latest release numbers
+  delegate_to: localhost
+  run_once: true
+  block: 
+   - name: Get latest pgbouncer release info
+     uri:
+       url: https://api.github.com/repos/pgbouncer/pgbouncer/releases/latest
+       return_content: true
+     register: json_response
+
+   - name: Get latest release number
+     set_fact:
+       pgbouncer_release: "{{ json_response.json.tag_name | regex_replace('pgbouncer_','') | trim }}"
+  tags: [build_pgbouncer , install_pgbouncer]
+
+
+## install dependecies ################################################################################
+- name: Installation of pgbouncer dependencies
+  block:
+
+      - name: install epel-repository
+        yum: 
+          name: epel-release
+          state: present
+      
+      - name: install dependencies packages
+        yum: 
+         state: latest
+         name:
+          - libevent
+          - libevent-devel
+          - systemd 
+          - systemd-devel 
+          - gcc
+          - pkgconfig
+          - openssl
+          - openssl-devel
+          #for git source compilation
+          #- git
+          #- libtool
+          #- autoconf 
+          #- automake 
+          #- pandoc
+
+
+## INSTALL (download and build ) pgbouncer #####################################################################################
+################################################################################################################################
+- name: Download and build pgbouncer 
+  block:
+   - name: Downloading pgbouncer version {{ pgbouncer_release }}
+     get_url:
+         url: https://github.com/pgbouncer/pgbouncer/releases/download/pgbouncer_{{ pgbouncer_release }}/pgbouncer-{{ pgbouncer_release | regex_replace('_','.') }}.tar.gz
+         dest: /tmp/pgbouncer.tar.gz
+   - name: creating extract directory
+     file:
+           state: directory
+           mode: "777"
+           path: /tmp/pgbouncer
+
+   - name: extract pgbouncer
+     unarchive:
+       remote_src: yes
+       src: /tmp/pgbouncer.tar.gz
+       dest: /tmp/pgbouncer
+
+   - name: compile pgbouncer
+     shell: source /etc/profile && cd /tmp/pgbouncer/pgbouncer-{{ pgbouncer_release | regex_replace('_','.') }} && ./configure --with-systemd --prefix=/usr/local && make && make install
+     notify:
+      - restart pgbouncer
+
+   - name: Create symlink
+     file:
+        src: '/usr/local/bin/pgbouncer'
+        dest: '/usr/bin/pgbouncer'
+        state: link
+        mode: "777"
+     notify:
+      - restart pgbouncer
+  
+   # set pgbouncer service
+   - name: set systemd service file
+     template:
+      src: pgbouncer.service.j2
+      dest: /etc/systemd/system/pgbouncer.service
+
+  tags: build_pgbouncer
+
+## CONFIGURE pgbouncer #########################################################################################################
+################################################################################################################################
+- name: Set pgbouncer config files 
+  block:
+  
+          ## set default pgbouncer config files  ################################################################################
+          - name: creating pgbouncer config directory 
+            file:
+                   state: directory
+                   mode: "777"
+                   path: "{{ pgbouncer_config_dir }}"
+          
+          - name: creating pgbouncer log directory 
+            file:
+                   state: directory
+                   mode: "777"
+                   path: "{{ pgbouncer_log_dir }}"
+          
+          - name: Copy pgbouncer configuration file
+            template:
+              src: pgbouncer.ini.j2
+              dest: "{{ pgbouncer_config_dir }}/pgbouncer.ini"
+              owner: postgres
+              group: postgres
+              mode: 0640
+            notify:
+              - restart pgbouncer
+
+          - name: Copy userlist file
+            template:
+              src: userlist.txt.j2
+              dest: "{{ pgbouncer_config_dir }}/userlist.txt"
+              owner: postgres
+              group: postgres
+              mode: 0640
+            notify:
+              - restart pgbouncer
+          
+          ## overwrite default config files with template ones  ###################################################################
+          - name: Copy userlist file 
+            copy:
+              src: "{{ source_template_folder }}/userlist.txt"
+              dest: "{{ pgbouncer_config_dir }}/userlist.txt"
+              owner: postgres
+              group: postgres
+              mode: 0640
+              ignore_errors: yes
+            notify:
+              - restart pgbouncer
+          
+          - name: Copy pgbouncer file
+            copy:
+              src: "{{ source_template_folder }}/pgbouncer.ini"
+              dest: "{{ pgbouncer_config_dir }}/pgbouncer.ini"
+              owner: postgres
+              group: postgres
+              mode: 0640
+              ignore_errors: yes
+            notify:
+              - restart pgbouncer
+
+          # for some reason after reboot when starting pgbouncer service we get permission error. 
+          # So commneting out pid directory path on pgbouncer.ini so it uses default postgres one and not this one created below
+          - name: creating pgbouncer pid directory 
+            file:
+                   state: directory
+                   mode: "777"
+                   path: /var/run/pgbouncer
+
+          ## set ssh/tls certificates
+          - name: creating certs tls directory 
+            file:
+                   state: directory
+                   mode: "777"
+                   path: /root/tls
+          
+          - name : copy tls scripts
+            template:
+              src: "tls/set_tls_certs.sh.j2"
+              dest: "/root/tls/set_tls_certs.sh"
+              mode: 700
+
+          - name: set_tls_certs
+            shell: /root/tls/set_tls_certs.sh
+          
+          # commenting out any db specific mappping as we are using general mapping *
+          - name: modify pgbouncer.ini 1 
+            replace:
+              path: "{{ pgbouncer_config_dir }}/pgbouncer.ini"
+              regexp: "{{ item.search }}"
+              replace: "{{ item.replace }}" 
+            with_items:
+              - search: '^\s*([^;].*dbname.*)' 
+                replace: ';\1' 
+            notify:
+              - restart pgbouncer
+          
+          # rewrite pgbouncer.ini with our settings
+          - name: modify pgbouncer.ini 2
+            lineinfile:
+              path: "{{ pgbouncer_config_dir }}/pgbouncer.ini"
+              regexp: "{{ item.search }}"
+              line: "{{ item.replace }}" 
+            with_items:
+              # for some reason after reboot when starting pgbouncer service we get permission error. So commneting out pid directory path on pgbouncer.ini
+              - search: "pidfile.*"
+                replace: ";; pidfile = /var/run/pgbouncer/pgbouncer.pid"
+              - search: ".*unix_socket_dir.*"
+                replace: "unix_socket_dir = /var/run/postgresql"
+              - search: "listen_addr"
+                replace: "listen_addr=*"
+              - search: "listen_port"
+                replace: "listen_port={{ pgbouncer_port }}"
+              - search: "host=127"
+                replace: "* = host=localhost port={{ postgresql_port }}"
+              - search: "client_tls_sslmode"
+                replace: "client_tls_sslmode = require"
+              - search: "client_tls_ca_file"
+                replace: "client_tls_ca_file = {{ pgbouncer_config_dir }}/root.crt"
+              - search: "client_tls_key_file"
+                replace: "client_tls_key_file = {{ pgbouncer_config_dir }}/pgbouncer.key"
+              - search: "client_tls_cert_file"
+                replace: "client_tls_cert_file = {{ pgbouncer_config_dir }}/pgbouncer.crt"
+            notify:
+              - restart pgbouncer
+
+          # set pgouncer port as default port on the OS
+          - name: add paths to /etc/profile.d
+            lineinfile:
+              path: "/etc/profile.d/postgresql-{{ postgresql_version }}.sh"
+              regexp: "{{ item.search }}"
+              line: "{{ item.replace }}" 
+            with_items:
+              - search: "PGPORT"
+                replace: "export PGPORT={{ pgbouncer_port }}"
+              - search: "PGHOST"
+                replace: "export PGHOST={{ ansible_default_ipv4.address }}"
+  tags: pgbouncer_config_reload
+
+## enable and start pgbouncer service ##########################################################################
+- name: enable and start pgbouncer
+  service:
+    name: pgbouncer
+    enabled: true
+    state: started
+

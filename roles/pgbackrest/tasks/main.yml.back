@@ -1,0 +1,26 @@
+---
+# tasks file for pgbackrest
+
+- name: Download pgbackrest 
+  delegate_to: localhost
+  get_url:
+      url: https://github.com/pgbackrest/pgbackrest/archive/release/2.30.tar.gz
+      dest: /tmp/pgbackrest.tar.gz
+  run_once: true
+
+- name: creating extract directory
+  delegate_to: localhost
+  file:
+        state: directory
+        mode: "777"
+        path: /tmp/pgbackrest
+
+- name: extract pgbackrest
+  delegate_to: localhost
+  unarchive:
+    src: /tmp/pgbackrest.tar.gz
+    dest: /tmp/pgbackrest
+
+- name: compile pgbackrest
+  delegate_to: localhost
+  shell: source /etc/profile && cd /tmp/pgbackrest/pgbackrest-release-2.30/src && ./configure && make

@@ -1,0 +1,97 @@
+## this roles configures some settings taken from the template source ########################################################################
+
+
+
+## add template extra mounts to fstab commented out ##################################
+- name: add extra mounts to fstab
+  block:
+        - name: include remote_access_file
+          include_vars: "{{ source_template_folder }}/extra_mounts_details.yml"
+
+        - name: write extra mounts into fstab
+          lineinfile:
+            path: /etc/fstab
+            state: present
+            line: "#ANSIBLE. Brought from template. Commented out by Ansible # {{ item.mount_source }} {{ item.mount_point }} {{ item.type }} {{ item.options }} 0 0"
+          when: item.mount_point not in context_mount_points|map(attribute="mountpoint")|list
+          loop:
+            "{{ extra_mounts }}" 
+  tags: [ extra_mounts ]  
+
+
+
+## add template crons commented out ################################################
+- name: set crons
+  block: 
+        - shell: (cd {{ source_template_folder }}/crons ; find *.cron)
+          delegate_to: localhost
+          register: cron_files
+
+        - name: copy cron files to node
+          copy:
+            src: "{{ source_template_folder }}/crons/{{ item }}"
+            mode: 0777
+            dest: /tmp/
+          with_items: 
+            - "{{ cron_files.stdout_lines }}"
+
+        #for some reason not working fine. commenting out lines that start with multiple #
+        #- name: comment out cronjobs on files
+        #  replace:
+        #    path:  /tmp/{{ item }}
+        #    regexp: '^[^#]'
+        #    replace: '#ANSIBLE. Brought from template. Commented out by Ansible #'
+        #  with_items: 
+        #    - "{{ cron_files.stdout_lines }}"
+
+
+        - shell: "sed -i 's/^[^#]/#ANSIBLE. Brought from template. Commented out by Ansible #/g' /tmp/{{ item }}"
+          with_items: 
+            - "{{ cron_files.stdout_lines }}"
+
+        - name: restore commented out crons from files
+          shell: crontab -u {{ item[:-5] }} /tmp/{{ item }}
+          with_items: 
+            - "{{ cron_files.stdout_lines }}"
+  tags: [ set_crons ]
+
+
+
+## try to set SSH passwordless remote logins found on template  ######################
+- name: set SSH passwordless logins
+  block:
+        - name: set default value to enable_remote_access in case we reach timeout in next step
+          set_fact:
+            enable_remote_access: no
+        - name: Wait to  user to provide remote passwords
+          pause:
+            prompt: "\n Do you wanna create passwordless ssh connections now? (yes/no) \n\n If yes, please add password credentials to {{ source_template_folder }}/remote_access_details.yml file before continuing. If not found, the default passwords declared in vault will be used. \n ( If 'no' or not answered in 60 seconds, execution will continue and leave passwordless connections for another time )\n"
+            seconds: 60
+          register: enable_remote_access
+          
+        - name: set ssh passwordless access to other hosts
+          block:
+           - name: include remote_access_file
+             include_vars: "{{ source_template_folder }}/remote_access_details.yml"
+
+           - name: install sshpass
+             yum:
+               name: sshpass
+               state: present
+
+           - name: Debug
+             debug:
+               msg: "User {{ item.local_user }} logs into {{ item.remote_host |regex_replace( template_host_ip,ansible_default_ipv4.address ) }} as user {{ item.remote_user }} with password {{ item.remote_password |default(default_passwords[item.remote_user],true) }}"
+             loop:
+              "{{ remote_access_details }}"
+           
+           # this command is quite complex:
+           # replaces template_host_ip by the ip of our new host
+           # if now password provided, uses default ones from vault 
+           - name: set passwordless login
+             ignore_errors: yes
+             shell: su -l {{ item.local_user }} -c "ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa <<<n ; sshpass -p {{ item.remote_password |default(vault_default_passwords[item.remote_user],true) }} ssh-copy-id -i ~/.ssh/id_rsa.pub -o StrictHostKeyChecking=no {{ item.remote_user }}@{{ item.remote_host |regex_replace( template_host_ip,ansible_default_ipv4.address ) }}"
+             loop:
+              "{{ remote_access_details }}"
+          when: enable_remote_access.user_input | bool
+  tags: [ ssh ] 

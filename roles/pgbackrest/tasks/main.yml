@@ -1,0 +1,241 @@
+
+## DOWNLOAD AND BUILD PGBACKREST ###########################################################################
+- name: Get pgbackrest latest release numbers
+  delegate_to: localhost
+  run_once: true
+  block: 
+   - name: Get latest pgbackrest release info
+     uri:
+       url: https://api.github.com/repos/pgbackrest/pgbackrest/releases/latest
+       return_content: true
+     register: json_response
+
+   - name: Get latest release number
+     set_fact:
+       pgbackrest_release: "{{ json_response.json.tag_name | regex_replace('release/','') | trim }}"
+  tags: [build_pgbackrest , install_pgbackrest]
+
+- name: Download and build pgbackrest
+  block: 
+   
+   - name: install epel-repository
+     yum:
+          name: epel-release
+          state: present
+   
+   - name: yum | enable powertools
+     shell: dnf config-manager --set-enabled powertools 
+     #dnf_repository:
+     #  name: powertools
+     #  enabled: yes
+   
+   #already installed in 248
+   - name: install compilation dependencies
+     yum:
+         name:
+           - libyaml
+           - libyaml-devel
+           - libxml2-devel
+           - openssl-devel
+           - lz4-devel 
+           - libzstd-devel 
+           - bzip2-devel 
+   
+   - name: Downloading pgbackrest version {{ pgbackrest_release }}
+     get_url:
+         url: https://github.com/pgbackrest/pgbackrest/archive/release/{{ pgbackrest_release }}.tar.gz
+         dest: /tmp/pgbackrest.tar.gz
+
+   - name: creating extract directory
+     file:
+           state: directory
+           mode: "777"
+           path: /tmp/pgbackrest
+
+   - name: extract pgbackrest
+     unarchive:
+       src: /tmp/pgbackrest.tar.gz
+       dest: /tmp/pgbackrest
+       remote_src: yes
+
+   - name: compile pgbackrest
+     shell: source /etc/profile && cd /tmp/pgbackrest/pgbackrest-release-{{ pgbackrest_release }}/src && ./configure && make
+  
+   - name: install epel-repository
+     yum:
+          name: epel-release
+          state: present
+      
+   - name: install dependencies packages
+     yum:
+        name:
+            - libzstd
+        state: present
+ 
+  tags: build_pgbackrest
+
+
+## INSTALL PGBACKREST AND SET CONF FILES AND FOLDERS ##################################################3
+- name: Installation of pgbackrest 
+  block:
+
+
+      - name: Copy pgBackRest binary from build host
+        copy:
+          src: /tmp/pgbackrest/pgbackrest-release-{{ pgbackrest_release }}/src/pgbackrest
+          dest: /usr/bin
+          remote_src: yes
+          mode: 0755
+
+      - name: (Re)Create pgBackRest configuration file and directories
+        file:
+          path: /var/log/pgbackrest
+          state: absent 
+      - file:
+          path: /var/log/pgbackrest
+          state: directory
+          owner: "{{ backup_user }}" 
+          group: postgres
+          mode: 0770
+      - file:
+          path: /etc/pgbackrest
+          state: absent 
+      - file:
+          path: /etc/pgbackrest
+          state: directory
+      - file:
+          path: "{{ backup_folder }}"
+          state: absent 
+      - file:
+          path: "{{ backup_folder }}"
+          state: directory
+          mode: 0760
+          owner: "{{ backup_user }}" 
+          group: postgres
+      - file:
+          path: "{{ backup_folder }}/{{ cluster_name }}"
+          state: directory
+          mode: 0760
+          owner: "{{ backup_user }}" 
+          group: postgres
+      - template:
+          src: pgbackrest.conf.j2
+          dest: /etc/pgbackrest/pgbackrest.conf
+          force: yes 
+          mode: 0760
+          owner: "{{ backup_user }}" 
+          group: postgres
+      - name: Make sure the installation worked
+        become_user: postgres
+        command: pgbackrest
+        register: pgbackrest
+      - debug: msg= "{{ pgbackrest.stdout }}"
+  tags: install_pgbackrest
+
+
+## CONFIGURE POSTGRESQL FOR PGBACKREST ##########################################################################
+- name: Configuration of pgbackrest to database
+  block:
+     
+     # set archiving
+     - name: update gucs on postgresql.conf
+       lineinfile:
+           path: "/data/{{ cluster_name }}/postgresql.conf"
+           regexp: "^{{ item.key }}"
+           line: "{{ item.key }} = '{{ item.value }}'"
+       loop:
+          - { key: 'max_wal_senders' , value: '3' }
+          - { key: 'wal_level' , value: 'replica' }
+          - { key: 'archive_mode' , value: 'on' }
+          - { key: 'archive_command' , value: 'pgbackrest --stanza={{ cluster_name }} archive-push %p' }
+     
+     # create user and give access
+     - name: create backup user in db if it doesn't exist
+       become: true
+       become_user: postgres
+       shell: psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='{{ backup_user }}'" | grep -q 1 || psql -c "create role {{backup_user }} with superuser login"
+       ignore_errors: yes 
+     
+     - name: modify  pg_hba.conf to grant access to user
+       lineinfile:
+        path: "/data/{{ cluster_name }}/pg_hba.conf"
+        line: "host    postgres        {{ backup_user }}        {{ ansible_default_ipv4.address }}/32  trust # pgbackrest. Added by Ansible"
+        state: present
+   
+     # restart postgres to load changes ( and if no changes? we could check! notify. iker )     
+     - name: restart postgresql
+       become: true
+       become_user: postgres
+       shell:
+        cmd: source /etc/profile && pg_ctl restart -m fast
+
+     # create cron jobs for backup
+     - name: Creates a cron job for full backup ( default settings ) 
+       cron:
+         name: full_backup 
+         weekday: "0"
+         hour: "{{ backup_time }}"
+         user: "{{ backup_user }}"
+         job: "pgbackrest --stanza={{ cluster_name }} --type=full backup"
+     
+     - name: Creates a cron job for differential/incremental backup ( default settings ) 
+       cron:
+         name: diff_backup 
+         weekday: "1-6"
+         hour: "{{ backup_time }}"
+         user: "{{ backup_user }}"
+         job: "pgbackrest --stanza={{ cluster_name }} --type=diff backup"
+
+  tags: [ configure_pgbackrest ]
+
+
+## SET UP BACKUP. DELETES OLD ONE IF ANY!!! ##################################################################
+- name: Reset backup ( deletes old backup !! ) 
+  block:
+     
+     # recreate backup folder
+     - file:
+          path: "{{ backup_folder }}"
+          state: absent 
+     - file:
+          path: "{{ backup_folder }}"
+          state: directory
+          mode: 0760
+          owner: "{{ backup_user }}" 
+          group: postgres
+     - file:
+          path: "{{ backup_folder }}/{{ cluster_name }}"
+          state: directory
+          mode: 0760
+          owner: "{{ backup_user }}" 
+          group: postgres
+     
+     # clean S3 backup folders
+     - name: Delete archive folder from s3 so we can recreate it 
+       delegate_to: localhost
+       shell: aws s3 rm --recursive s3://{{ backup_s3_bucket }}/var/lib/pgbackrest/archive/{{ cluster_name }}
+       ignore_errors: yes
+     
+     - name: Delete backup folder from s3 so we can recreate it 
+       delegate_to: localhost
+       shell: aws s3 rm --recursive s3://{{ backup_s3_bucket }}/var/lib/pgbackrest/backup/{{ cluster_name }}
+       ignore_errors: yes
+
+     # create stanza
+     - name: initialise pgbackrest stanza
+       become: true
+       become_user: postgres 
+       command: pgbackrest --stanza={{ cluster_name }} --log-level-console=info stanza-create
+       register: pgbackrest
+     - debug: msg= "{{ pgbackrest.stdout }}"
+
+     # check it looks OK
+     - name: check configuration
+       become: true 
+       become_user: "{{ backup_user }}"
+       command: pgbackrest --stanza={{ cluster_name }} --log-level-console=info check
+       register: pgbackrest
+     - debug: msg= "{{ pgbackrest.stdout }}"
+  
+  when: delete_old_pgbackrest_stanza == 'yes'
+  tags: [ reset_backup ]

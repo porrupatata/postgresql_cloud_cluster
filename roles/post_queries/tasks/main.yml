@@ -1,0 +1,93 @@
+---
+# tasks file for post_queries
+
+## recreate query folder and copy files to machine ##################################################
+- name: copy query files to remote machine 
+  become: yes
+  become_user: postgres
+  block:
+  
+          - name: clear folder
+            file: 
+              path: /tmp/post_queries
+              state: "{{ item }}" 
+            with_items:
+              - absent
+              - directory
+          - name: copy sql folder
+            copy:
+              src: post_queries/{{ item }}
+              dest: /tmp/post_queries
+            with_items:
+              - "{{ post_queries }}"
+
+  tags: [ copy_post_queries ] 
+
+## execute post query files  ############################################################################
+- name: execute post query files 
+  become: yes
+  become_user: postgres
+  block:
+
+          # clear var file 
+          - name: clear var file 
+            file: 
+             path: /tmp/post_sql_files.sh
+             state: absent
+
+          # get sql files to execute into var file
+          - name: get sql files
+            shell: (cd /tmp/post_queries ; find {{ item }}/*.sql >> /tmp/post_sql_files.sh)
+            with_items:
+              - "{{ post_queries }}"
+         
+          # load var file into ansible var
+          - name: get post_sql_files from shell
+            shell: cat /tmp/post_sql_files.sh
+            register: post_sqls
+
+          # – name: run_queries
+          - community.postgresql.postgresql_query: 
+               db: "{{ db_name }}"
+               as_single_query: yes
+               path_to_script: "/tmp/post_queries/{{ item }}"
+               named_args:
+                 "{{ post_query_replacement_args }}"
+            ignore_errors: yes
+            with_items:
+              - "{{ post_sqls.stdout_lines }}"
+          
+  tags: [ execute_post_queries ] 
+
+
+## running this upgrade issue files
+## what the hell !!! 
+## execute post query files  ############################################################################
+- name: execute this upgrade issue files in manual mode
+  become: yes
+  become_user: postgres
+  block:
+          # clear var file 
+          - name: clear var file 
+            file: 
+             path: /tmp/post_sql_files.sh
+             state: absent
+          
+          # get upgrade issue sql files to execute into var file
+          - name: get sql files
+            shell: (cd /tmp/post_queries ; find {{ item }}/*.version_upgrade_issue >> /tmp/post_sql_files.sh 2>/dev/null)
+            ignore_errors: yes
+            with_items:
+              - "{{ post_queries }}"
+          
+          # load var file into ansible var
+          - name: get post_sql_files from shell
+            shell: cat /tmp/post_sql_files.sh
+            register: post_sqls
+
+          - shell: 
+               cmd: "psql -d {{ db_name }} -f /tmp/post_queries/{{ item }} 2>/dev/null"
+            with_items:
+              - "{{ post_sqls.stdout_lines }}"
+  tags: [ execute_post_queries ] 
+
