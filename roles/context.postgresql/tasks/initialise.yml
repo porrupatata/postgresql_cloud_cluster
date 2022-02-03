@@ -1,0 +1,198 @@
+---
+# tasks file for context.postgresql
+
+## point conf to right DATA folder  #########################################################################
+
+# create our data directory
+- name: postgres | create data directory
+  become: true
+  file:
+    owner: postgres
+    group: postgres
+    path: "{{ postgresql_dist[ansible_os_family | lower].datadir }}"
+    state: directory
+    mode: 0700
+
+# select/use our data directory in service definition
+- name: change PGPATH for systmctl | create overwrite folder
+  lineinfile:
+        dest: "/usr/lib/systemd/system/postgresql-{{ postgresql_version }}.service"
+        state: present
+        regexp: '^Environment=PGDATA='
+        line: 'Environment="PGDATA={{ postgresql_dist[ansible_os_family | lower].datadir }}"'
+
+- name:  systemctl reload to make sure PGDAGA change gets seen
+  command: systemctl daemon-reload 
+
+ 
+# point factory PGDATA folder to our pgdata ( just in case ? ) 
+- name: Delete original data folder
+  file:
+    state: absent
+    path: '/var/lib/pgsql/{{ postgresql_version }}/data' 
+- name: Create symlink from old PGPATH to new
+  file:
+        src: '{{ postgresql_dist[ansible_os_family | lower].datadir }}'
+        dest: '/var/lib/pgsql/{{ postgresql_version }}/data'
+        state: link
+        owner: postgres
+        group: postgres 
+- name: change symlink ownership
+  shell: 
+    cmd: 'chown -h postgres {{ postgresql_dist[ansible_os_family | lower].datadir }} && chgrp -h postgres {{ postgresql_dist[ansible_os_family | lower].datadir }}'
+    warn: false
+
+
+## INITDB ####################################################################################################
+- name: delete old data_content
+  shell: rm -Rf {{ postgresql_dist[ansible_os_family | lower].datadir }}/*
+  when: reload=='True'
+
+- name: >-
+    postgres | initialise PostgreSQL cluster (skip if data directory
+    already exists) . Runs:  {{ postgresql_dist[ansible_os_family | lower].bindir }}/{{  postgresql_dist.redhat.setupname }}
+  command: >-
+     {{ postgresql_dist[ansible_os_family | lower].bindir }}/{{
+       postgresql_dist.redhat.setupname }}
+     initdb 
+  args:
+    creates: >-
+      {{ postgresql_dist[ansible_os_family | lower].datadir }}/PG_VERSION
+  environment:
+    PGSETUP_INITDB_OPTIONS: --encoding=UTF8 --locale=en_GB.UTF-8 --data-checksums --auth-host=md5 
+
+
+## move WAL file folder to a separate volume ####################################################################
+- name: Copy wal files to new location
+  copy:
+       src: '{{ postgresql_dist[ansible_os_family | lower].datadir }}/pg_wal/'
+       dest: '/wal/'
+       remote_src: yes
+       owner: postgres
+       group: postgres
+
+- name: Delete pg_wal log folder in order create a symlink
+  file:
+        path: '{{ postgresql_dist[ansible_os_family | lower].datadir }}/pg_wal'
+        state: absent 
+
+- name: Create symlink for wal logs
+  file:
+        src: '/wal'
+        dest: '{{ postgresql_dist[ansible_os_family | lower].datadir }}/pg_wal'
+        state: link
+        owner: postgres
+        group: postgres
+
+## move TEMP files folder to a separate volume #########################################################
+- name: Create symlink for postgresql temp
+  file:
+        src: '/temp'
+        dest: '{{ postgresql_dist[ansible_os_family | lower].datadir }}/base/pgsql_tmp'
+        state: link
+        owner: postgres
+        group: postgres
+
+
+## SET ENVIRONMENT VARIABLES
+- name: create /etc/profile.d
+  file:
+    state: touch 
+    path: "/etc/profile.d/postgresql-{{ postgresql_version }}.sh"
+
+- name: add paths to /etc/profile.d
+  lineinfile:
+    path: "/etc/profile.d/postgresql-{{ postgresql_version }}.sh"
+    state: present
+    line: "{{ item }}"
+  with_items:
+   - '#Postgresql paths:'
+   - 'export PATH={{ postgresql_dist[ansible_os_family | lower].bindir }}:$PATH'
+   - 'export PGDATA={{ postgresql_dist[ansible_os_family | lower].datadir }}'
+   - 'export PGPORT={{ postgresql_port }}'
+
+
+
+
+
+## create postgres  generic symlinks that don't have  specific postgres version numbers on it #####################################
+
+- name: Create symlink to pgsql
+  file:
+        src: '/usr/pgsql-{{ postgresql_version }}'
+        dest: '/usr/pgsql'
+        state: link
+        mode: "777"
+
+- name: Create symlink from postgresql.service to posgresql-{{ postgresql_version }}.service"
+  file:
+        src: "/usr/lib/systemd/system/postgresql-{{ postgresql_version }}.service"
+        dest: "/usr/lib/systemd/system/postgresql.service"
+        state: link
+
+- name: Disable postgresql-{{ postgresql_version }} named service for automatic start
+  service:
+    name: "postgresql-{{ postgresql_version }}"
+    enabled: no
+
+- name: Enable postgresql service for automatic start
+  service:
+    name: "postgresql"
+    enabled: yes
+
+- name: systemctl reload
+  command: systemctl daemon-reload 
+
+
+
+## set desired GUCs on postgresql.conf ###########################################################
+
+- name: load postgresql_server_conf from file if not defined
+  include_vars:
+    name: postgresql_conf_settings_update
+    file: "tmp/host_postgresql_settings.yml"
+  when: postgresql_server_conf_update is not defined
+  tags: [ initial_conf2 ]
+
+- name: update gucs on postgresql.conf
+  lineinfile:
+      path: "/data/{{ cluster_name }}/postgresql.conf"
+      regexp: "^{{ item.key }}"
+      line: "{{ item.key }} = '{{ item.value }}'"
+  with_dict:
+     "{{ postgresql_conf_settings_update }}"
+  notify:
+    - restart postgresql
+  tags: [ initial_conf2 ]
+
+
+## set pg_hba.conf ##############################################################################
+- name: copy template pg_hba.conf
+  copy:
+   src: "{{ source_template_folder }}/pg_hba.conf"
+   dest: "{{ postgresql_dist[ansible_os_family | lower].confdir }}/pg_hba.conf"
+   owner: postgres
+   mode: 0640
+  notify:
+    - restart postgresql
+  tags : [ pg_hba_conf ]
+
+#replace template host ip by current host ip   
+- name: add paths to /etc/profile.d
+  replace:
+      path: "/data/{{ cluster_name }}/pg_hba.conf"
+      regexp: "{{ template_host_ip }}"
+      replace: "{{ ansible_default_ipv4.address }}"
+  notify:
+    - restart postgresql
+  tags : [ pg_hba_conf ]
+
+
+## start postgres ###############################################################################
+- name: restart postgresql
+  become: true
+  become_user: postgres
+  shell:
+    cmd: source /etc/profile && pg_ctl restart -m fast || pg_ctl start
+  tags : [ re-start_postgresql ]
+

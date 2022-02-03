@@ -1,0 +1,82 @@
+---
+# defaults file for context.postgresql
+
+# The PostgreSQL major version, required
+# postgresql_version
+
+# Full package version of postgres, see context.postgresql_client
+# postgresql_package_version
+
+#CLUSTER NAME, required
+#cluster_name
+
+# List of dictionaries of databases
+postgresql_databases: []
+
+# List of dictionaries of users
+postgresql_users: []
+
+# Network interfaces to listen on
+postgresql_server_listen: localhost
+
+# Dictionary of additional postgresql.conf options
+postgresql_server_conf: {}
+
+# Dictionary of additional postgresql.conf options. Using this dictionary as aux dict to the one above. Really needed?
+postgresql_conf_settings: {}
+
+# Whether to enable the default local authentication methods
+postgresql_server_auth_local: true
+
+# List of dictionaries of client authorisation lines
+postgresql_server_auth: []
+
+# Recursively reset the owner/group of the postgres datadir?
+postgresql_server_chown_datadir: false
+
+
+######################################################################
+# Internal role variables, do not modify
+######################################################################
+
+# Uses postgresql_distribution_redhat from context.postgresql_client
+postgresql_dist:
+  redhat:
+    bindir: /usr/pgsql-{{ postgresql_version }}/bin
+    conf_postgresql_src: postgresql-conf.j2
+    confdir: /data/{{ cluster_name }}
+    datadir: /data/{{ cluster_name }}
+    basename: >-
+      {{ postgresql_distribution_redhat[postgresql_version].basename }}
+    repoid: "{{ postgresql_distribution_redhat[postgresql_version].repo }}"
+    setupname: "{{ postgresql_distribution_redhat[postgresql_version].setup }}"
+    service: postgresql-{{ postgresql_version }}
+    version_suffix: >-
+      {{
+        (postgresql_package_version | length > 0) |
+        ternary('-' + postgresql_package_version, '')
+      }}
+  rocky:
+    bindir: /usr/pgsql-{{ postgresql_version }}/bin
+    conf_postgresql_src: postgresql-conf.j2
+    confdir: /data/{{ cluster_name }}
+    datadir: /data/{{ cluster_name }}
+    basename: >-
+      {{ postgresql_distribution_redhat[postgresql_version].basename }}
+    repoid: "{{ postgresql_distribution_redhat[postgresql_version].repo }}"
+    setupname: "{{ postgresql_distribution_redhat[postgresql_version].setup }}"
+    service: postgresql-{{ postgresql_version }}
+    version_suffix: >-
+      {{
+        (postgresql_package_version | length > 0) |
+        ternary('-' + postgresql_package_version, '')
+      }}
+  debian:
+    bindir: /usr/lib/postgresql/{{ postgresql_version }}/bin
+    confdir: /etc/postgresql/{{ postgresql_version }}/main
+    conf_postgresql_src: postgresql-conf-10-ubuntu.j2
+    datadir: /var/lib/postgresql/{{ postgresql_version }}/main
+    basename: postgresql-{{ postgresql_version }}
+    service: postgresql
+
+data_dir: "{{ postgresql_dist[ansible_os_family | lower].datadir }}"

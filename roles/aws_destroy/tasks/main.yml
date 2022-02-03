@@ -1,0 +1,23 @@
+   - name: terrafrom AWS DELETION 
+     delegate_to: localhost
+     block:
+     - name: Destroy AWS infraestructure
+       terraform:
+        project_path: ./terraform 
+        force_init: true
+        state: absent 
+        variables:
+           instance_name: "{{ instance_name }}" 
+           server_ip: "{{ server_ip |default() }}"
+           instance_type: "{{ instance_type }}"
+           key_name: "{{ key_name }}"
+           schedule_tag: "{{ schedule_tag }}"
+           data_volume_size: "{{ data_volume_size }}"
+           wal_volume_size: "{{ wal_volume_size }}"
+           temp_volume_size: "{{ temp_volume_size }}"
+           #report_volume_size: "{{ report_volume_size }}"
+           #file_server_id: "{{ file_server_id }}"
+           #file_server_az: "{{ file_server_az }}"
+       register: terraform
+
+     tags: [ destroy ]

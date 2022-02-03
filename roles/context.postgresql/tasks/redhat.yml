@@ -1,0 +1,75 @@
+---
+# tasks file for context.postgresql centos
+
+
+## disable installed postgresql #######################################################################
+- name: disable previous built-in postgres server
+  shell: dnf -qy module disable postgresql
+
+
+## enable beta/test repo if we are trying to install beta version #####################################
+- name: enable beta/testing repo if desired postgresql version is beta # have to flag it in config file
+  become: true
+  shell: yum-config-manager --enable pgdg{{ postgresql_version }}-updates-testing
+  when:
+     postgresql_version_is_beta == 'yes'
+
+
+## install postgres server ############################################################################
+- name: postgres | install server packages
+  become: true
+  dnf:
+    name: >-
+      {{ postgresql_dist.redhat.basename }}-server{{
+         postgresql_dist.redhat.version_suffix }}
+    state: present
+
+
+## install postgres server devel-packages ##############################################################
+- name: postgres | install devel packages
+  become: true
+  dnf:
+    name: >-
+      {{ postgresql_dist.redhat.basename }}-devel{{
+         postgresql_dist.redhat.version_suffix }}
+    state: present
+
+
+## install postgres contrib modules ####################################################################
+- name: postgres | install extension packages
+  become: true
+  dnf:
+    name: >-
+      {{ postgresql_dist.redhat.basename }}-contrib{{
+         postgresql_dist.redhat.version_suffix }}
+    state: present
+
+
+## install postgres procedural lan languages ###########################################################
+- name: postgres | install languages 
+  become: true
+  dnf:
+    name: 
+      - "{{ postgresql_dist.redhat.basename }}-plperl{{postgresql_dist.redhat.version_suffix }}"
+      - "{{ postgresql_dist.redhat.basename }}-plpython3{{postgresql_dist.redhat.version_suffix }}"
+    state: present
+  tags: languages
+
+
+## install psycopg #####################################################################################
+- name: postgres | install ansible prerequisites
+  become: true
+  dnf:
+    # Needs to match the Ansible interpreter
+    #ansible_python_version is version('3.0.0', '<') | ternary('2', '3') ## this was used on previous versions of postgresql. With postgresql14 i need the other below
+    name: >-
+      python{{
+        ansible_python_version is version('3.0.0', '<') | ternary('2', '3')
+      }}-psycopg2
+    state: present
+    #iker . here it looks like disables all repos but the last postgresq version one. There it doesn't find python2_psycopg2. So I'm trying in all repos instead.
+    disablerepo: "*"
+    #enablerepo: "{{ postgresql_dist.redhat.repoid }}"
+    # cant find psycopg in >= pgdg13
+    enablerepo: "pgdg-common"
+  tags: psycopg 

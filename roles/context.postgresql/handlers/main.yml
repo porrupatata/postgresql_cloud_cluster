@@ -1,0 +1,15 @@
+---
+# Handler for postgresql
+
+#- name: restart postgresql
+#  become: true
+#  service:
+#    name: "{{ postgresql_dist[ansible_os_family | lower].service }}"
+#    state: restarted
+
+
+- name: restart postgresql
+  become: true
+  become_user: postgres
+  shell:
+    cmd: source /etc/profile && pg_ctl restart -m fast

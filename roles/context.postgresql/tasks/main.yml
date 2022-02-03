@@ -1,0 +1,17 @@
+---
+# tasks file for context.postgresql
+
+- import_tasks: redhat.yml
+  when: ansible_os_family | lower == 'redhat'
+
+- import_tasks: rocky.yml
+  when: ansible_os_family | lower == 'rocky'
+
+- import_tasks: debian.yml
+  when: ansible_os_family | lower == 'debian'
+
+- import_tasks: initialise.yml
+  tags: initialise
+
+- import_tasks: databases.yml
+  tags: databases

@@ -1,0 +1,35 @@
+---
+
+- name: postgres - setup yum repository
+  become: true
+  yum:
+    name: https://download.postgresql.org/pub/repos/yum/reporpms/EL-8-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+    state: present
+    validate_certs: False
+    # not validing certs as I am having issues, but i should fix this. I wasn't having issues before v14.  
+    disable_gpg_check: yes
+    # disabling key use. but should try option below to import key
+    #     - rpm_key:
+    #          state: present
+    #          key: <path to your repo RPM-GPG-KEY>
+    #
+    # 
+
+- name: disable previous buil-in postgres server
+  shell: sudo dnf -qy module disable postgresql
+
+- name: enable testing repo if desired postgresql version is beta # have to flag it in config file
+  become: true
+  shell: yum-config-manager --enable pgdg{{ postgresql_version }}-updates-testing
+  when:
+     postgresql_version_is_beta == 'yes'
+
+- name: postgres - install client packages {{ postgresql_distribution_redhat[postgresql_version].basename }}{{ (postgresql_package_version | length > 0) | ternary('-' + postgresql_package_version, '') }}
+  become: true
+  yum:
+    name: >-
+      {{ postgresql_distribution_redhat[postgresql_version].basename }}{{
+        (postgresql_package_version | length > 0) |
+        ternary('-' + postgresql_package_version, '')
+      }}
+    state: present

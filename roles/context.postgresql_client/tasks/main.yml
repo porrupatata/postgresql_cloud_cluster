@@ -1,0 +1,10 @@
+---
+
+- import_tasks: redhat.yml
+  when: ansible_os_family | lower == 'redhat'
+
+- import_tasks: redhat.yml
+  when: ansible_os_family | lower == 'rocky'
+
+- import_tasks: debian.yml
+  when: ansible_os_family | lower == 'debian'
