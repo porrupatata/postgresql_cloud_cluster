@@ -2,6 +2,6 @@
 
 Postgresql cluster with pgbouncer, pgbackrest and logical replication.
 
-Creates cloud infraestructure ( curretnly only aws available ) and configures the cluster.
+Creates cloud infraestructure ( currently only aws available ) and configures the cluster.
 
 It has helper roles to migrate/upgrade/clone currently existing DBs
