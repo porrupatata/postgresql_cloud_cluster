@@ -1,0 +1,188 @@
+---
+# tasks file for context.postgresql_conf
+
+## set variable if not defined, using file content ##########################################################
+        #( variable will be defined and in memory if we are running this role after the get_template role )
+- name: load template postgresql.conf settings from file if variable not defined 
+  include_vars:
+   name: postgresql_settings_from_template
+   file: "{{ source_template_folder }}/template_postgresql_settings.yml"
+  when: postgresql_settings_from_template is not defined
+
+
+## get server specs ##########################################################################################
+- name: Save cpu count
+  set_fact:
+      pghost_vcpu_count: "{{ ansible_facts.processor_vcpus }}"
+
+- name: Save RAM memory
+  set_fact:
+      pghost_ram_mb: "{{ ansible_facts.memtotal_mb }}"
+      pghost_ram_gb: "{{ ( ansible_facts.memtotal_mb / 1024 ) | round(0,'floor') | int }}"
+
+- name: Print host specs
+  debug:
+      msg: 
+       - "RAM memory on host: {{ pghost_ram_mb }} MB"
+       - "RAM memory on host: {{ pghost_ram_gb }} GB"
+       - "Numbre of vcpus on host: {{ pghost_vcpu_count }}"
+
+- name: set default postgresql_conf settings
+  set_fact:
+      "max_connections": "{{ max_connections | default(postgresql_settings_from_template.max_connections) | default(50) }}"
+
+
+## calculate GUCs based on server specs and pgtune ##########################################################
+        # using pgtune https://pgtune.leopard.in.ua recommendations
+        # details on https://github.com/le0pard/pgtune/blob/master/webpack/selectors/configuration.js
+
+
+- name: calculate gucs
+  set_fact:
+     maintenance_work_mem: "{{ [ ( ( pghost_ram_mb | int / 16  ) / 1024 ) | round(0,'floor') | int, 0.5 ] | max  | string }}GB"
+     effective_cache_size: "{{ ( ( pghost_ram_mb | int * 3 / 4 ) / 1024 ) | round(0,'floor') | int |string }}GB"
+     shared_buffers: "{{ ( ( pghost_ram_mb | int / 4 ) / 1024 ) | round(0,'floor') | int |string }}GB"
+     wal_buffers: "{{ ( ( ( pghost_ram_mb | int * 3 / 4 ) * 3 / 100 ) ) | round(0,'floor') | int |string }}MB"
+     max_parallel_workers: "{{ pghost_vcpu_count }}"
+ 
+     # from https://www.postgresql.org/docs/14/logical-replication-config.html :
+     # max_logical_replication_workers: one per subscription + one more reserved for table syncronization = 2
+     # max_worker_processes should be at least max_logical_replication_workers + 1
+     max_worker_processes: "{{ [  pghost_vcpu_count | int , 3 ] | max }} "
+ 
+     max_parallel_workers_per_gather: "{{ ( pghost_vcpu_count|int / 2 ) | int }}"
+     max_parallel_maintenance_workers: "{{ [ ( pghost_vcpu_count|int / 2 ) | int, 4] | min }}"
+     checkpoint_completion_target: 0.9
+     #following GUCs depend of Disk type. We assume we are using always SSD
+     random_page_cost: 1.1
+     effective_io_concurrency: 200
+
+- name: adjust gucs per type
+  set_fact:
+     max_parallel_workers_per_gather: 4
+     max_parallel_maintenance_workers: 4
+  when:  max_parallel_workers_per_gather|int >4 and cluster_type != 'DW'
+
+- name: set work_mem
+  set_fact:
+     work_mem_value: "{{ ( ( pghost_ram_mb | int * 3 / 4 ) / ( max_connections|int * 3 ) / max_parallel_workers_per_gather|int ) | int }}"
+
+- name: calculate MIXED cluster_type specific GUCs 
+  set_fact:
+      ##this values dont seem right
+      # min_wal_size: '1GB'
+      #  max_wal_size: '4GB'
+     min_wal_size: '2GB'
+     max_wal_size: '8GB'
+     work_mem: "{{ ( work_mem_value | int / 2 ) | int | string }}MB"
+     default_statistics_target: 100
+  when: cluster_type == 'MIXED'
+
+- name: calculate OLTP cluster_type specific GUCs 
+  set_fact:
+     min_wal_size: '2GB'
+     max_wal_size: '8GB'
+     work_mem: "{{ work_mem_value | string }}MB"
+     default_statistics_target: 100
+  when: cluster_type == 'OLTP'
+
+- name: calculate DW cluster_type specific GUCs 
+  set_fact:
+     min_wal_size: '4GB'
+     max_wal_size: '16GB'
+     maintenance_work_mem: "{{ ( ( pghost_ram_mb | int / 8  ) / 1024 ) | round(0,'floor') | int | string }}GB"
+     work_mem: "{{ ( work_mem_value | int / 2 ) | int | string }}MB"
+     default_statistics_target: 500
+  when: cluster_type == 'DW'
+
+- name: adjust maintenance_work_mem in case too high
+  set_fact:
+     maintenance_work_mem: '2GB'
+  when:  maintenance_work_mem[:-2] | int > 2
+
+- name: adjust wal_buffers in case too high
+  set_fact:
+     wal_buffers: '16MB'
+  when:  wal_buffers[:-2] | int > 16
+
+- name: print calculated gucs
+  debug:
+     msg:
+      - "shared_buffers: {{ shared_buffers }}"
+      - "effective_cache_size {{ effective_cache_size }}"
+      - "maintenance_work_mem: {{ maintenance_work_mem }}"
+      - "work_mem: {{ work_mem }}"
+      - "wal_buffers: {{ wal_buffers }}"
+      - "min_wal_size: {{ min_wal_size }}"
+      - "max_wal_size: {{ max_wal_size }}"
+      - "max_parallel_workers: {{ max_parallel_workers }}"
+      - "max_worker_processes: {{ max_worker_processes }}"
+      - "max_parallel_maintenance_workers: {{ max_parallel_maintenance_workers }}"
+      - "max_parallel_workers_per_gather: {{ max_parallel_workers_per_gather }}"
+      - "default_statistics_target: {{ default_statistics_target }}"
+      - "checkpoint_completion_target: {{ checkpoint_completion_target }}"
+      - "random_page_cost: {{ random_page_cost }}"
+      - "effective_io_concurrency: {{ effective_io_concurrency }}"
+
+
+- name: set generated postgresql_conf settings
+  set_fact:
+    generated_postgresql_conf_settings:
+      "port": "{{ postgresql_port | default(5432) }}"
+      "max_connections": "{{ max_connections }}"
+      "shared_buffers": "{{ shared_buffers }}"
+      "effective_cache_size": "{{ effective_cache_size }}"
+      "maintenance_work_mem": "{{ maintenance_work_mem }}"
+      "work_mem": "{{ work_mem }}"
+      "wal_buffers": "{{ wal_buffers }}"
+      "min_wal_size": "{{ min_wal_size }}"
+      "max_wal_size": "{{ max_wal_size }}"
+      "max_parallel_workers": "{{ max_parallel_workers }}"
+      "max_worker_processes": "{{ max_worker_processes }}"
+      "max_parallel_maintenance_workers": "{{ max_parallel_maintenance_workers }}"
+      "max_parallel_workers_per_gather": "{{ max_parallel_workers_per_gather }}"
+      "default_statistics_target": "{{ default_statistics_target }}"
+      "checkpoint_completion_target": "{{ checkpoint_completion_target }}"
+      "random_page_cost": "{{ random_page_cost }}"
+      "effective_io_concurrency": "{{ effective_io_concurrency }}"
+
+
+## create postgresql host settings copying the template settings 
+- name: create initial postgresql.conf settings from template postgresql
+  set_fact:
+     host_postgresql_conf_settings : "{{ postgresql_settings_from_template | default ('{}') }}"
+
+## override postgresql settings with calculated settings based on host specs
+- name: override postgresql.conf values with values calculated per current host
+  set_fact:
+     host_postgresql_conf_settings: "{{ host_postgresql_conf_settings | combine ({ item.key : item.value  }) }}"
+  with_dict:
+     "{{ generated_postgresql_conf_settings }}"
+
+## override postgresql settings with USER defined values on the cluster_conf file
+- name: override postgresql.conf with values in our configuration file cluster_conf
+  set_fact:
+     host_postgresql_conf_settings: "{{ host_postgresql_conf_settings | combine ({ item.key : item.value  }) }}"
+  with_dict:
+     "{{ postgresql_conf_settings }}"
+
+## show values
+- name: show
+  debug: 
+    msg: "{{ item.key }} is {{ item.value }}"
+  with_dict: 
+   "{{ host_postgresql_conf_settings }}"
+
+## save values into file
+- name: write into file
+  delegate_to: localhost
+  copy:
+   content:  "{{ host_postgresql_conf_settings |to_nice_yaml }}"
+   dest: tmp/host_postgresql_settings.yml
+
+## set variable used in next roles
+- name: set variable that takes the next role
+  set_fact:
+     postgresql_server_conf: "{{ host_postgresql_conf_settings }}"
+
+

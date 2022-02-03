@@ -1,0 +1,213 @@
+---
+# tasks file for ssh_keys
+
+
+## recreate source template folder in localhost to keep template conf files ###
+- name: delete crons directory if exists
+  delegate_to: localhost
+  file:
+    path: "./{{ source_template_folder }}"
+    state: absent
+
+- name: create crons directory
+  delegate_to: localhost
+  file:
+    path: "./{{ source_template_folder }}"
+    state: directory
+
+
+## create var file to use on template host ###################################
+- name: create variable file for bash_script 
+  delegate_to: localhost
+  run_once: true
+  block:
+  
+  - name: include user_file
+    include_vars: conf_files/user_details.yml
+
+  - name: create aux var local_users
+    set_fact:
+        local_users: 'LOCAL_USERS=('
+
+  - name: Add items to var
+    set_fact: 
+        local_users: "{{ local_users }} {{ item.user }}"
+    loop:
+     "{{ host_users }}" 
+
+  - name: create aux var remote_users
+    set_fact:
+        remote_users: 'REMOTE_USERS=('
+  
+  - name: Add items to var
+    set_fact: 
+        remote_users: "{{ remote_users }} {{ item.user }}"
+    loop:
+     "{{ remote_ssh_users }}" 
+    when: remote_ssh_users is defined
+  
+  - name: Add items to var
+    set_fact: 
+        remote_users: "{{ remote_users }} {{ item.user }}"
+    loop:
+     "{{ host_users }}" 
+    when: remote_ssh_users is not defined
+  
+  - name:  print vars to file
+    delegate_to: localhost
+    copy:
+       dest: "{{ source_template_folder }}/bash_variables.sh"
+       content: |
+         {{ local_users }} )
+         {{ remote_users }} )
+
+
+## get access to  template host ###########################################
+- name: get access to template host
+  delegate_to: localhost
+  shell:  "sshpass -p {{ template_host_password }} ssh-copy-id -i ~/.ssh/id_rsa.pub -o StrictHostKeyChecking=no root@{{ template_host_ip }}"
+
+## copy scripts and variables to template host #############################
+- name: get template host details
+  delegate_to: "{{ template_host_ip }}"
+  run_once: true
+  block:
+  - name: copy bash script and variables to template host
+    copy:
+     src: "./{{ item }}"
+     dest: /tmp/
+     mode: 0777
+    with_items:
+     - "{{ source_template_folder }}/bash_variables.sh"
+     - scripts/get_template_host_details.sh
+
+
+## get ssh connection details  from template host ###########################
+- name: get template host SSH details
+  delegate_to: "{{ template_host_ip }}"
+  run_once: true
+  block:
+  - name: execute script
+    shell: cd /tmp && ./get_template_host_details.sh SSH >/tmp/template_host_details_ssh.log 2>&1
+
+  - fetch:  
+      src: /tmp/{{ item }} 
+      flat: yes
+      dest: "./{{ source_template_folder }}/"
+    with_items:
+      - remote_access_details.yml
+  tags: [ get_ssh_details ]
+ 
+
+
+## get non ssh template host details ##########################################
+ 
+- name: get template host NON SSH details
+  delegate_to: "{{ template_host_ip }}"
+  run_once: true
+  block:
+  
+  - name: execute script
+    shell: cd /tmp && ./get_template_host_details.sh NOT_SSH >/tmp/template_host_details_others.log 2>&1
+  
+  # clear cron directory on localhost
+  - name: delete crons directory if exists
+    delegate_to: localhost
+    file:
+      path: "./{{ source_template_folder }}/crons"
+      state: absent
+  - name: create crons directory
+    delegate_to: localhost
+    file:
+      path: "./{{ source_template_folder }}/crons"
+      state: directory
+
+  # get cron files to localhost
+  - shell: (cd /tmp/crons ; find *.cron)
+    register: cron_files
+  - fetch: 
+       src: /tmp/crons/{{ item }} 
+       dest: "{{ source_template_folder }}/crons/" 
+       flat: yes
+    with_items: 
+      - "{{ cron_files.stdout_lines }}"
+
+  # get other files to localhost
+  - fetch:  
+      src: /tmp/{{ item }} 
+      flat: yes
+      dest: "./{{ source_template_folder }}/"
+    with_items:
+      - template_user_details.yml
+      - extra_mounts_details.yml
+  
+  tags: [ get_not_ssh_details ]
+
+
+
+
+## get postgresql and pgbouncer conf files ###############################
+- name: get postgresql and pgbouncer conf files from template host
+  delegate_to: "{{ template_host_ip }}"
+  run_once: true
+  block: 
+  
+  - fetch:  
+      src: "{{ item }}" 
+      flat: yes
+      dest: "./{{ source_template_folder }}/"
+    ignore_errors: yes
+    with_items:
+      - "{{ pgbouncer_conf.ini_path }}"
+      - "{{ pgbouncer_conf.userlist_path }}"
+  
+  - fetch:  
+      src: "{{ item }}" 
+      flat: yes
+      dest: "./{{ source_template_folder }}/"
+    with_items:
+      - "{{ postgres_data_path }}/pg_hba.conf"
+      - "{{ postgres_data_path }}/postgresql.conf"
+  
+  tags: [ template_fetch_conf_files ]
+
+
+
+## get postgresql settings ################################################## 
+- name: get postgresql current settings from template host
+  block:
+
+        - name: get template postgresql.conf settings
+          delegate_to: "{{ template_host_ip }}"
+        #  become: true
+        #  become_user: postgres
+          postgresql_query:
+                db: "{{ template_db_name }}" 
+                query: select name, current_setting(name) as value from pg_settings where source<>'default' and sourcefile like '%postgresql.conf%'
+                login_user: postgres
+                port: "{{ template_port }}"
+          register: template_out
+
+        - name: create dictionary from postgresql.conf settings 
+          set_fact:
+           postgresql_settings_from_template:  "{{ postgresql_settings_from_template | combine ({ item.name : item.value  }) }}"
+          when: item.name not in gucs_ignored_from_template
+          with_items:
+           "{{ template_out.query_result }}"
+          vars:
+            postgresql_settings_from_template: {}
+
+        - name:
+          debug:
+           msg: "{{item.key}} is {{item.value}}"
+          with_dict:
+           "{{ postgresql_settings_from_template }}"
+
+        - name: write template postgresql.conf into file
+          delegate_to: localhost
+          copy:
+           content:  "{{ postgresql_settings_from_template |to_nice_yaml }}"
+           dest: "{{ source_template_folder }}/template_postgresql_settings.yml"
+  
+  tags: [ template_fetch_postgresql_settings ] 
+

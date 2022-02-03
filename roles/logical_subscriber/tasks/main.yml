@@ -1,0 +1,32 @@
+---
+# tasks file for logical_subscriber
+
+## grant access on the master to the replication user ######################
+- name: Add {{ cluster_name }}  to pg_hba.conf of the master
+  delegate_to: "{{ logical_master_ip }}"
+  block:
+   - name: modify master pg_hba.conf
+     lineinfile:
+        path: "{{ logical_master_pg_hba_conf }}"
+        line: "host    mm_live     logical_replication_user    {{ ansible_default_ipv4.address }}/32         trust # {{ cluster_name }} slice logical replication. Added by Ansible"
+        state: present
+
+   - name: reload postgres server on master
+     shell: su - postgres -c "pg_ctl reload"
+  tags: [pg_hba_conf_master]
+
+
+## create subscription on slice ############################################
+- name: create subscription
+  become: yes
+  become_user: postgres
+  block:
+        - name: drop replication slot if exists
+          shell: psql  "{{ logical_connection  }}" -c "select pg_drop_replication_slot(slot_name) FROM pg_replication_slots where slot_name='{{ cluster_name }}_subscription'"
+          when: drop_replication_slot == true
+
+        - name: create subscription
+          shell: psql -d {{ db_name }} -c "CREATE SUBSCRIPTION {{ cluster_name }}_subscription CONNECTION '{{ logical_connection}}' PUBLICATION {{ logical_publication }} WITH ( streaming = true )"
+  tags: [ create_subscription ]
+
+

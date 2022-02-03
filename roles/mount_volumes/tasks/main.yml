@@ -1,0 +1,127 @@
+    ## 1 - MOUNT EBS VOLUMES -
+    - name: mount ebs volumes
+      block: 
+        ## XFS FORMAT THE VOLUMES
+        - name: formatting the volumes
+          filesystem:
+            dev: '{{ item }}'
+            fstype: "xfs"
+          with_items:
+            - "/dev/nvme1n1"
+            - "/dev/nvme2n1"
+            - "/dev/nvme3n1"
+        
+        ## GET VOLUME UUIDS
+        # get ec2 volume_ids from terraform
+        - name: show local
+          delegate_to: localhost
+          shell: echo $(cd terraform && terraform output {{ item }} |sed 's/[-|"]//g')
+          register:  volumes
+          with_items:
+            - data_volume_id
+            - wal_volume_id
+            - temp_volume_id
+
+        - set_fact:
+           "{{ item.item }}": "{{ item.stdout }}"
+          with_items: "{{volumes.results}}"
+ 
+        # get uuids using the ec2 volume_ids 
+        - name: get data volume uuid
+          shell: (find /dev -name 'nvme*n1' | xargs lsblk -o +SERIAL /dev/ 2>/dev/null |grep {{ data_volume_id }} |awk '{print $1}'|xargs -I {} blkid /dev/{} -sUUID -ovalue)
+          register: data_volume_uuid
+        
+        - name: get wal volume uuid
+          shell: (find /dev -name 'nvme*n1' | xargs lsblk -o +SERIAL /dev/ 2>/dev/null |grep {{ wal_volume_id }} |awk '{print $1}'|xargs -I {} blkid /dev/{} -sUUID -ovalue)
+          register: wal_volume_uuid
+        
+        - name: get temp volume uuid
+          shell: (find /dev -name 'nvme*n1' | xargs lsblk -o +SERIAL /dev/ 2>/dev/null |grep {{ temp_volume_id }} |awk '{print $1}'|xargs -I {} blkid /dev/{} -sUUID -ovalue)
+          register: temp_volume_uuid
+        
+        ## MOUNT
+        # create mount points 
+        - name: creating mount points (directories) 
+          file:
+            state: directory
+            mode: "777"
+            path: '{{item}}'
+          with_items:
+            - "/wal"
+            - "/data"
+            - "/temp"
+        
+        # mount
+        - name: mounting the filesystem
+          mount:
+            name: "{{item.mountpoint}}"
+            src: "{{item.device}}"
+            fstype: xfs 
+            opts: "{{item.options}}"
+            state: mounted
+          with_items:
+            - mountpoint:  "/data"
+              device: UUID="{{ data_volume_uuid.stdout }}"
+              options: noatime,nodiratime,logbsize=256k,allocsize=1m
+            - mountpoint:  "/wal"
+              device: UUID="{{ wal_volume_uuid.stdout }}"
+              options: noatime,nodiratime,logbsize=256k,allocsize=1m
+            - mountpoint:  "/temp"
+              device: UUID="{{ temp_volume_uuid.stdout }}"
+              options: noatime,nodiratime,logbsize=256k,allocsize=1m
+        
+        # double set permissions 
+        - name: changing permissions to mount-point paths 
+          file:
+            state: directory
+            mode: "777"
+            path: '{{item}}'
+          with_items:
+            - "/wal"
+            - "/data"
+            - "/temp"
+      tags: [ mount_ebs ]
+ 
+    ## 2 - MOUNT CONTEXT STANDARD MOUNTS
+    - name: mounting Context default shares and volumes
+      mount:
+        name: "{{item.mountpoint}}"
+        src: "{{item.device}}"
+        fstype: nfs
+        opts: defaults,nofail
+        state: mounted
+      with_items:
+         "{{ context_mount_points }}"
+      tags: [ mount_context ]
+    
+    ## 3 - SHARES SPECIFIC TO THIS CLUSTER IF REQUIRED
+    - name: mounting cluster specific shares/volumes
+      mount:
+        name: "{{item.mountpoint}}"
+        src: "{{item.device}}"
+        fstype: nfs
+        opts: defaults,nofail
+        state: mounted
+      with_items:
+         "{{ cluster_specific_mount_points }}"
+      when: cluster_specific_mount_points is defined
+      tags: [ mount_cluster_specific ]
+
+    ## 4 - SET SWAP IF REQUIRED
+    - name: create swap
+      block:
+       - name: remove swap if exists
+         shell: swapoff -v /swapfile && rm -f /swapfile
+         ignore_errors: yes
+
+       - name: create swap
+         shell: dd if=/dev/zero of=/swapfile count={{ swap_size_gb }} bs=1GiB && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+
+       - name: add swap to /etc/fstab
+         lineinfile:
+           path: /etc/fstab
+           line: /swapfile swap swap defaults 0 0
+      
+      when: swap_size_gb is defined
+      tags: [ swap ]
+    

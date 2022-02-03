@@ -1,0 +1,74 @@
+---
+# tasks file for data_load
+- name: (re)create database 
+  become: yes
+  become_user: postgres
+  shell: source /etc/profile && psql -c "select pg_terminate_backend(pid) from pg_stat_activity where datname='{{ db_name }}'" && psql -c "drop database if exists {{ db_name }} ;" && psql -c "create database {{ db_name }};"
+  tags: [ recreatedb, reload, never]        
+      
+- name: load globals
+  become: yes
+  become_user: postgres
+  shell: source /etc/profile && psql -d {{ db_name }} -f {{ data_load_folder }}/{{ globals_file }} > /tmp/globals_load.log 2>&1
+  ignore_errors: yes
+  tags: [ globals ]
+
+- name: load schema using  psql -d {{ db_name }} -f {{ data_load_folder }}/{{ schema_file }} > /tmp/schema_load.log 2>&1 
+  become: yes
+  become_user: postgres
+  shell: source /etc/profile && psql -d {{ db_name }} -f {{ data_load_folder }}/{{ schema_file }} > /tmp/schema_load.log 2>&1
+  ignore_errors: yes
+  when: only_schema == 'true'
+  tags: [ schema ]
+
+- name: load data
+  become: yes
+  become_user: postgres
+  block:
+      - name : create postgresql.conf update var for bulk_load
+        set_fact: 
+             postgresql_conf_settings_update:
+                #wal_buffers = 64MB # 4x
+                #maintenance_work_mem = 4GB # 2x
+                #max_connections = 32 #cpu x2
+                #shared_buffers = 15GB # reduced /2
+                fsync: off
+                synchronous_commit: off
+                full_page_writes: off
+                autovacuum:  off
+
+
+      - import_tasks: common/update_gucs.yml 
+
+      - name: load data pg_restore -j {{ ansible_facts.processor_vcpus }} -d {{ db_name }} -vFd {{ data_load_folder }}/{{ data_dump_folder }} > /tmp/data_load.log
+        shell: source /etc/profile && pg_restore -j {{ ansible_facts.processor_vcpus }} -d {{ db_name }} -vFd {{ data_load_folder }}/{{ data_dump_folder }} > /tmp/data_load.log 2>&1 ; exit 0
+        ignore_errors: yes
+        when: data_format == 'directory'
+        tags: [ data ]
+      
+      - name: load data psql -d {{ db_name }} {{ data_load_folder }}/{{ data_file }} > /tmp/data_load.log
+        shell: source /etc/profile && psql -d {{ db_name }} {{ data_load_folder }}/{{ data_file }} > /tmp/data_load.log 2>&1 ; exit 0
+        ignore_errors: yes
+        when: data_format == 'standard'
+        tags: [ data ]
+      
+      - name: load data zcat {{ data_load_folder }}/{{ data_file }} | psql -d {{ db_name }} > /tmp/data_load.log
+        shell: source /etc/profile && zcat {{ data_load_folder }}/{{ data_file }} | psql -d {{ db_name }} > /tmp/data_load.log 2>&1 ; exit 0
+        ignore_errors: yes
+        when: data_format == 'standard_gz'
+        tags: [ data ]
+
+      - name : set postgresql.conf back to normal behaviour
+        set_fact: 
+             postgresql_conf_settings_update:
+                fsync: on
+                synchronous_commit: on
+                full_page_writes: on
+                autovacuum:  on
+               
+      - import_tasks: common/update_gucs.yml 
+ 
+  when: only_schema != 'true' 
+  tags: [ data ]
+      
+
