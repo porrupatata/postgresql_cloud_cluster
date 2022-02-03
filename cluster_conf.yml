@@ -1,0 +1,126 @@
+## GENERAL SETTINGS #################################################################
+#####################################################################################
+
+cluster_name: 'test_cluster'
+db_name: 'test_db'
+
+
+postgresql_port: 6432
+pgbouncer_port: 5432
+
+postgres_password: "{{ vault_postgres_password }}" 
+
+
+
+## AWS-CREATE TERRAFROM #############################################################
+## AWS - EC2 SETTINGS  ##############################################################
+
+instance_name: "{{ cluster_name }}-xxxxx"
+
+instance_type: 'm5a.large'
+key_name: 'xxxxxxx'
+root_volume_size: 24
+data_volume_size: 250
+wal_volume_size: 50 
+temp_volume_size: 50
+schedule_tag: 'test-hoursxxx' 
+
+##SERVER IP: If left commented out autommatically assigned. 
+#If we specify the IP, make sure is available
+#server_ip: xxx.xxx.xxx.xxx
+
+##SWAP: leave swap undeclared ( commented out ) if we don not want to set any swap
+#swap_size_gb: 8
+
+
+
+
+## POSTGRESQL SETTINGS ############################################################
+###################################################################################
+
+## this variable overrides any other value generated during the process
+postgresql_conf_settings:
+  listen_addresses: "{{ postgresql_server_listen }}"
+  port: "{{ postgresql_port }}"
+
+
+cluster_specific_mount_points:
+        - mountpoint: "/mnt/mountpoint"
+          device: "xx.xxx.xxx.xxx:/mnt/share"
+
+
+##pgtune-like cluster_type https://pgtune.leopard.in.ua
+### possible options for cluster type: OLTP, DW, MIXED
+## sets GUCs based on specs
+cluster_type: 'MIXED'
+
+
+
+
+
+
+## DATA LOAD ###################################################################### 
+###################################################################################
+
+data_load_folder: '/tmp'
+globals_file: 'test_globals.dmp'
+
+only_schema: 'false' # set to either 'true' or 'false'
+schema_file: 'test_schema.dmp'
+
+
+#data_format: 'directory'
+
+data_format: 'standard'
+data_file: 'test.dmp'
+
+
+## TEMPLATE HOST DETAILS ########################################################## 
+###################################################################################
+
+
+## TEMPLATE HOST DETAILS
+template_host_ip: xxx.xxx.xxx.xxx.
+template_port: 5432
+template_host_password: "{{ vault_template_host_password }}" 
+postgres_data_path: '/data/testxxx'
+gucs_ignored_from_template: ( 'checkpoint_segments','archive_mode', 'archive_command', 'wal_level' )
+template_db_name: test
+
+## pgbouncer conf file location
+pgbouncer_conf:
+  ini_path: '/usr/local/share/doc/pgbouncer/pgbouncer.ini'
+  userlist_path: '/etc/pgbouncer/userlist.txt'
+
+## remote users to check
+remote_ssh_users: 
+   - user: myuserxxxx
+   - user: postgres
+
+##default remote passwords
+default_passwords: "{{ vault_default_passwords  }}"
+
+
+
+
+## LOGICAL REPLICATION ############################################################################
+
+logical_publication: publication_name_xxxxx
+
+
+
+## POST QUERIES ####################################################################################
+
+my_db_x: this_db_xxxx
+
+## post query types to execute
+post_queries:
+ - generic
+ # - other_queries
+
+## vars to replace on postquery files
+post_query_replacement_args:
+    database_name: "{{ my_db_x }}"
+    test_user_password: 'xxxxx'
+ 
+

@@ -1,0 +1,58 @@
+# Simple example relying on the default Postgres PUBLIC privileges
+# which allow access to all users
+
+- hosts: localhost 
+  
+  vars_files:
+     - cluster_conf.yml
+
+  roles:
+  - role: aws_create
+    tags: [ aws_create, never ]
+  - role: aws_destroy
+    tags: [ aws_destroy, never ]
+
+- hosts: all 
+  vars_files:
+     - cluster_conf.yml
+
+  roles:
+
+  - role: mount_volumes
+    tags: [ mount ]
+
+  - role: context.postgresql_os
+    tags: [ os ]
+  
+  - role: get_template_settings 
+    tags: [ get_template ]
+ 
+  - role: context.postgresql_conf
+    tags: [ conf ]
+
+  - role: context.postgresql
+    tags: [ install ]
+ 
+  - role: pgbouncer
+    tags: [ pgbouncer ]
+
+  - role: pgbackrest
+    tags: [ pgbackrest ]
+    
+  - role: data_load
+    tags: [ data_load ]
+
+  - role: set_template_settings 
+    tags: [ set_template ]
+
+  - role: post_queries 
+    tags: [ post_queries ]
+
+  - role: logical_subscriber 
+    tags: [ logical ]
+ 
+#  - role: minor/mayor upgrade scripts
+
+  - role: test_role 
+    tags: [ test_role,never ]
+
